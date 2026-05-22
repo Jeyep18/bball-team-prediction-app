@@ -1,14 +1,3 @@
-"""
-Streamlit dashboard for the NBA Game Outcome & Live Performance Predictor.
-
-The app lets users scrape Basketball-Reference data, choose model variables,
-train Logistic Regression, make predictions, and interpret model performance
-without running separate terminal commands.
-
-Run with:
-    python -m streamlit run app.py
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -125,8 +114,6 @@ def load_model_bundle() -> dict | None:
 
     saved_object = joblib.load(MODEL_FILE)
 
-    # Older project versions saved only the model. This compatibility wrapper
-    # keeps those files usable, while all new training saves the full bundle.
     if isinstance(saved_object, dict) and "model" in saved_object:
         return saved_object
 
@@ -141,24 +128,16 @@ def load_model_bundle() -> dict | None:
 
 
 def save_dataset(data: pd.DataFrame) -> None:
-    """Persist freshly scraped data and refresh Streamlit's cached dataset."""
     data.to_csv(DATA_FILE, index=False)
     load_dataset.clear()
 
 
 def save_model_bundle(model_bundle: dict) -> None:
-    """Persist the trained model bundle and refresh Streamlit's cached model."""
     joblib.dump(model_bundle, MODEL_FILE)
     load_model_bundle.clear()
 
 
 def build_prediction_inputs(model_features: list[str]) -> pd.DataFrame:
-    """
-    Render input widgets only for variables used by the trained model.
-
-    The returned DataFrame uses the exact feature order learned during training,
-    which prevents accidental mismatches between sliders and model columns.
-    """
     values: dict[str, float | int] = {}
     columns = st.columns(3)
 
@@ -223,7 +202,7 @@ def show_confusion_matrix(matrix) -> None:
 
 
 def explain_selected_features(selected_features: list[str]) -> None:
-    """Show a compact explanation of the variables used by the model."""
+    """Show compact explanation of the variables used by the model."""
     explanation_rows = [
         {"Variable": feature, "Meaning": VARIABLE_GUIDE[feature]}
         for feature in selected_features
@@ -231,7 +210,127 @@ def explain_selected_features(selected_features: list[str]) -> None:
     st.dataframe(pd.DataFrame(explanation_rows), use_container_width=True, hide_index=True)
 
 
-st.title("NBA Game Outcome & Live Performance Predictor")
+def build_prediction_comparison(data: pd.DataFrame, prediction: pd.DataFrame, model_features: list[str]) -> pd.DataFrame:
+    """Compare one entered stat line with average winning and losing stat lines."""
+    outcome_means = data.groupby(TARGET_COLUMN)[model_features].mean().rename(index={0: "Average Loss", 1: "Average Win"})
+    comparison = outcome_means.T
+    comparison["Your Stat Line"] = prediction.iloc[0][model_features]
+    comparison["Closer To"] = comparison.apply(
+        lambda row: "Win average"
+        if abs(row["Your Stat Line"] - row["Average Win"]) <= abs(row["Your Stat Line"] - row["Average Loss"])
+        else "Loss average",
+        axis=1,
+    )
+    comparison["Win-Loss Gap"] = comparison["Average Win"] - comparison["Average Loss"]
+    comparison["Your Gap vs Loss Avg"] = comparison["Your Stat Line"] - comparison["Average Loss"]
+    comparison["Your Gap vs Win Avg"] = comparison["Your Stat Line"] - comparison["Average Win"]
+    return comparison.reset_index(names="Variable")
+
+
+def show_statline_comparison_plot(data: pd.DataFrame, prediction: pd.DataFrame, model_features: list[str]) -> None:
+    """Plot the input, average wins, and average losses on a shared standardized scale."""
+    plot_data = data[model_features].copy()
+    standard_deviation = plot_data.std().replace(0, 1)
+    dataset_mean = plot_data.mean()
+
+    averages = data.groupby(TARGET_COLUMN)[model_features].mean().rename(index={0: "Average Loss", 1: "Average Win"})
+    chart_rows = pd.concat([averages, prediction[model_features].rename(index={0: "Your Stat Line"})])
+    standardized = ((chart_rows - dataset_mean) / standard_deviation).T.reset_index(names="Variable")
+    long_chart = standardized.melt(id_vars="Variable", var_name="Profile", value_name="Standardized Value")
+
+    figure, axis = plt.subplots(figsize=(10, max(4.5, len(model_features) * 0.45)))
+    sns.barplot(
+        data=long_chart,
+        y="Variable",
+        x="Standardized Value",
+        hue="Profile",
+        hue_order=["Average Loss", "Average Win", "Your Stat Line"],
+        palette=["#B23A48", "#2A9D8F", "#3A5BA0"],
+        ax=axis,
+    )
+    axis.axvline(0, color="#444444", linewidth=1)
+    axis.set_title("Your Stat Line vs Dataset Win/Loss Profiles")
+    axis.set_xlabel("Standardized value compared with all scraped games")
+    axis.set_ylabel("")
+    axis.legend(title="")
+    st.pyplot(figure, use_container_width=True)
+    plt.close(figure)
+
+
+def get_model_contributions(model, prediction: pd.DataFrame, model_features: list[str]) -> pd.DataFrame | None:
+    if not hasattr(model, "named_steps") or "scaler" not in model.named_steps or "logistic_regression" not in model.named_steps:
+        return None
+
+    scaler = model.named_steps["scaler"]
+    classifier = model.named_steps["logistic_regression"]
+    scaled_values = scaler.transform(prediction[model_features])[0]
+    coefficients = classifier.coef_[0]
+    contributions = coefficients * scaled_values
+
+    return pd.DataFrame(
+        {
+            "Variable": model_features,
+            "Value": prediction.iloc[0][model_features].values,
+            "Model Direction": ["Pushes toward WIN" if value > 0 else "Pushes toward LOSS" for value in contributions],
+            "Impact Score": contributions,
+            "Strength": abs(contributions),
+        }
+    ).sort_values("Strength", ascending=False)
+
+
+def describe_prediction_reasoning(
+    comparison: pd.DataFrame,
+    contributions: pd.DataFrame | None,
+    predicted_class: int,
+) -> None:
+    closer_to_win = comparison[comparison["Closer To"] == "Win average"]
+    closer_to_loss = comparison[comparison["Closer To"] == "Loss average"]
+    outcome_label = "win" if predicted_class == 1 else "loss"
+
+    st.subheader("Why This Looks Like a Win or Loss")
+    st.write(
+        f"This prediction leans toward a **{outcome_label.upper()}** because the entered profile is closer to the "
+        f"dataset's winning averages on {len(closer_to_win)} selected variable(s) and closer to losing averages on "
+        f"{len(closer_to_loss)} selected variable(s). The model also weighs variables differently, so a large gap in "
+        "a highly predictive stat can matter more than several small gaps in weaker stats."
+    )
+
+    if contributions is not None and not contributions.empty:
+        win_drivers = contributions[contributions["Impact Score"] > 0].head(3)
+        loss_drivers = contributions[contributions["Impact Score"] < 0].head(3)
+
+        if not win_drivers.empty:
+            st.write(
+                "Main variables pushing the prediction toward a win: "
+                + ", ".join(win_drivers["Variable"].tolist())
+                + "."
+            )
+        if not loss_drivers.empty:
+            st.write(
+                "Main variables pulling the prediction toward a loss: "
+                + ", ".join(loss_drivers["Variable"].tolist())
+                + "."
+            )
+
+    strongest_gaps = comparison.reindex(comparison["Win-Loss Gap"].abs().sort_values(ascending=False).index).head(4)
+    gap_notes = []
+    for _, row in strongest_gaps.iterrows():
+        if row["Win-Loss Gap"] > 0:
+            direction = "higher in wins"
+        elif row["Win-Loss Gap"] < 0:
+            direction = "lower in wins"
+        else:
+            direction = "about the same in wins and losses"
+        gap_notes.append(f"{row['Variable']} is usually {direction}")
+
+    st.write(
+        "Dataset pattern to compare against: "
+        + "; ".join(gap_notes)
+        + ". These gaps are descriptive averages, while the probability above comes from the trained Logistic Regression model."
+    )
+
+
+st.title("NBA Game Outcome & Performance Predictor")
 st.caption("Courtside Analytics Dashboard for scraping, training, predicting, and interpreting NBA game outcomes.")
 
 st.write(
@@ -469,6 +568,51 @@ if st.button("Predict Game Outcome", type="primary", use_container_width=True):
         st.write(
             "Interpretation: the model estimates this stat line is more similar to past losses than past wins "
             "in the scraped dataset."
+        )
+
+    comparison_table = build_prediction_comparison(nba_data, prediction_input, model_features)
+    model_contributions = get_model_contributions(model, prediction_input, model_features)
+
+    describe_prediction_reasoning(comparison_table, model_contributions, predicted_class)
+
+    st.subheader("Stat Line Comparison Chart")
+    st.write(
+        "This chart standardizes each variable so different units can be compared together. "
+        "Bars farther right are above the overall dataset average; bars farther left are below it."
+    )
+    show_statline_comparison_plot(nba_data, prediction_input, model_features)
+
+    st.subheader("Detailed Variable Comparison")
+    st.write(
+        "Use this table to see whether each entered value is closer to the average winning stat line or the average "
+        "losing stat line in the scraped dataset."
+    )
+    st.dataframe(
+        comparison_table[
+            [
+                "Variable",
+                "Average Loss",
+                "Average Win",
+                "Your Stat Line",
+                "Closer To",
+                "Your Gap vs Loss Avg",
+                "Your Gap vs Win Avg",
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    if model_contributions is not None:
+        st.subheader("Model Variable Effects")
+        st.write(
+            "The impact score estimates how each variable moves the model's log-odds. Positive values push toward a win; "
+            "negative values push toward a loss. Larger absolute values have stronger influence for this entered stat line."
+        )
+        st.dataframe(
+            model_contributions[["Variable", "Value", "Model Direction", "Impact Score"]],
+            use_container_width=True,
+            hide_index=True,
         )
 
     st.dataframe(prediction_input, use_container_width=True, hide_index=True)

@@ -1,10 +1,3 @@
-"""
-Phase 2: Train the NBA game outcome prediction model.
-
-This script loads clean_nba_data.csv, trains a Logistic Regression model, and
-exports the trained pipeline to nba_regression_model.pkl.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -40,13 +33,7 @@ RANDOM_STATE = 42
 
 
 def choose_stratify_target(y: pd.Series) -> pd.Series | None:
-    """
-    Use stratified splitting only when both classes have enough rows.
-
-    Stratification is best for normal datasets because it keeps the win/loss
-    balance similar in training and testing. For very small demo datasets,
-    however, scikit-learn requires at least 2 rows per class.
-    """
+    """Use stratified splitting only when both classes have enough rows."""
     class_counts = y.value_counts()
     if len(class_counts) == 2 and class_counts.min() >= 2:
         return y
@@ -54,12 +41,6 @@ def choose_stratify_target(y: pd.Series) -> pd.Series | None:
 
 
 def train_logistic_model(data: pd.DataFrame, selected_features: list[str]) -> dict:
-    """
-    Train Logistic Regression and return everything the dashboard needs.
-
-    The returned dictionary is intentionally simple so it can be saved with
-    joblib and loaded later without rebuilding extra objects.
-    """
     if len(selected_features) < 2:
         raise ValueError("Select at least 2 variables before training the model.")
 

@@ -1,17 +1,3 @@
-"""
-Phase 1: Automated live web scraper for NBA team game logs.
-
-This script collects 2025-2026 regular-season game logs from
-Basketball-Reference and saves a clean machine-learning dataset to:
-
-    clean_nba_data.csv
-
-Important note for students:
-Basketball-Reference uses team schedule pages where every row is one game.
-The schedule table includes team and opponent box-score metrics. We use the
-team metrics as model features and the win/loss result as the prediction target.
-"""
-
 from __future__ import annotations
 
 import time
@@ -29,8 +15,7 @@ OUTPUT_FILE = Path("clean_nba_data.csv")
 # Add or remove team codes here without changing the scraping logic.
 TEAM_CODES = ["LAL", "BOS", "GSW"]
 
-# Basketball-Reference asks users to keep request volume low. Sleeping for
-# 3 seconds keeps us at 20 requests per minute or less.
+# keep request volume low. Sleeping for 3 seconds.
 REQUEST_DELAY_SECONDS = 3
 
 SEASON_YEAR = 2026
@@ -47,7 +32,7 @@ HEADERS = {
     )
 }
 
-# Final feature names used throughout scraping, training, and Streamlit.
+# Final feature names
 FEATURE_COLUMNS = [
     "FG%",
     "3P%",
@@ -69,12 +54,7 @@ _last_request_time = 0.0
 
 
 def fetch_page(url: str) -> str | None:
-    """
-    Download a Basketball-Reference page with polite rate limiting.
-
-    This function centralizes request handling so every schedule page and every
-    box-score page follows the same defensive behavior.
-    """
+    """Download a Basketball-Reference page with polite rate limiting."""
     global _last_request_time
 
     elapsed = time.time() - _last_request_time
@@ -135,12 +115,7 @@ def extract_team_totals_from_box_score(box_score_url: str, team_code: str) -> di
 
 
 def scrape_team_games(team_code: str, progress_callback=None) -> pd.DataFrame:
-    """
-    Scrape one team's schedule page and return cleaned game-level rows.
-
-    The returned DataFrame contains only the model-ready columns:
-    FG%, 3P%, TRB, AST, TOV, Home, Win, Team.
-    """
+    """Scrape one team's schedule page and return cleaned game-level rows."""
     url = BASE_URL.format(team_code=team_code, season=SEASON_YEAR)
     message = f"Scraping {team_code}: {url}"
     print(message)
@@ -163,7 +138,6 @@ def scrape_team_games(team_code: str, progress_callback=None) -> pd.DataFrame:
         opponent_records: dict[str, list[int]] = {}
 
         for schedule_row in table.select("tbody tr"):
-            # Header rows inside the tbody have class="thead"; skip them.
             if "thead" in schedule_row.get("class", []):
                 continue
 
@@ -270,12 +244,7 @@ def main() -> None:
 
 
 def scrape_multiple_teams(team_codes: list[str], progress_callback=None) -> pd.DataFrame:
-    """
-    Scrape several teams and return one clean combined dataset.
-
-    Streamlit calls this function directly so users can gather data from the
-    dashboard instead of running this script in a terminal.
-    """
+    """Scrape several teams and return one clean combined dataset."""
     all_team_frames: list[pd.DataFrame] = []
 
     for team_code in team_codes:
@@ -288,10 +257,6 @@ def scrape_multiple_teams(team_codes: list[str], progress_callback=None) -> pd.D
 
     combined_data = pd.concat(all_team_frames, ignore_index=True).drop_duplicates().reset_index(drop=True)
 
-    # Once several teams are combined, this becomes a better opponent-strength
-    # proxy: each opponent receives the win rate observed for that team in the
-    # scraped dataset. Opponents outside the selected team list keep the schedule
-    # estimate or fall back to a neutral 0.500.
     if {"Team", "Opponent", "Win"}.issubset(combined_data.columns):
         team_win_rates = combined_data.groupby("Team")["Win"].mean()
         combined_data["Opponent_Win_Rate"] = (
